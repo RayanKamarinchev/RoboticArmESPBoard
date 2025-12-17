@@ -39,7 +39,7 @@ struct_message dataToSend;
 struct_message receivedData;
 
 bool success = false;
-double angles[3];
+double angles[6];
 double newAngles[6];
 
 void initAndConnectWifi()
@@ -57,6 +57,18 @@ void initAndConnectWifi()
   Serial.println(WiFi.localIP());
 }
 
+void sendMessage(Command command){
+  dataToSend.command = command;
+
+  esp_now_send(receiverMAC, (uint8_t *) &dataToSend, sizeof(dataToSend));
+}
+
+void onReceive(const uint8_t *macAddr, const uint8_t *data, int len) {
+  memcpy(&receivedData, data, sizeof(receivedData));
+  Serial.print("Received: ");
+  Serial.println(receivedData.command);
+}
+
 void initESPNow(){
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed");
@@ -70,18 +82,6 @@ void initESPNow(){
 
   esp_now_add_peer(&peerInfo);
   esp_now_register_recv_cb(onReceive);
-}
-
-void sendMessage(Command command){
-  dataToSend.command = command;
-
-  esp_now_send(receiverMAC, (uint8_t *) &dataToSend, sizeof(dataToSend));
-}
-
-void onReceive(const uint8_t *macAddr, const uint8_t *data, int len) {
-  memcpy(&receivedData, data, sizeof(receivedData));
-  Serial.print("Received: ");
-  Serial.println(receivedData.command);
 }
 
 void attachServos(){
@@ -117,8 +117,9 @@ void initPosition(){
   for (int i = 0; i <= 5; i++)
   {
     servos[i].write(servoAngles[i]);
-    delay(100);
+    // delay(100);
   }
+  delay(1000);
 }
 
 
@@ -135,7 +136,7 @@ bool receiveInstructions(std::vector<String> &commands, std::vector<std::vector<
   if (httpResponseCode == 200) {
     String payload = http.getString();
 
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<2048> doc;
     DeserializationError error = deserializeJson(doc, payload);
     Serial.println("Received instructions:");
     Serial.println(payload);
@@ -174,61 +175,52 @@ bool receiveInstructions(std::vector<String> &commands, std::vector<std::vector<
 
 void getServoAngles(double angles[], double *newAngles)
 {
-  newAngles[1] = angles[0]+7;
-  newAngles[2] = 215-angles[1];
-  newAngles[4] = angles[2]-74;
-
-  newAngles[0] = servoAngles[0];
-  newAngles[3] = servoAngles[3];
-  newAngles[5] = servoAngles[5];
-}
-
-bool isPositionUnsafe(double angles[])
-{
-  double alpha = angles[0];
-  double beta = angles[1];
-  double gamma = angles[2];
-  Serial.printf("Angles: %f %f %f\n", alpha, beta, gamma);
-
-  double a = 0.117;
-  double b = 0.122;
-  double c = 0.127;
-
-  double x = a * cos(alpha) + b * cos(alpha + beta) + c * cos(alpha + beta + gamma);
-  double z = a * sin(alpha) + b * sin(alpha + beta) + c * sin(alpha + beta + gamma);
-  Serial.printf("Position: x=%f, z=%f\n", x, z);
-
-  return z < 0 || x < 0.05;
+  newAngles[0] = 30-angles[0];
+  newAngles[1] = angles[1]+10; //7 10
+  newAngles[2] = 214-angles[2];//215 214
+  newAngles[3] = 150-angles[3];
+  newAngles[4] = angles[4]-73;//74 73
 }
 
 void rotateServos(double newAngles[], int moveTime = 1000, int stepTime = 20)
 {
-  int steps = moveTime / stepTime;
-  if (steps < 1) steps = 1;
+  const int NUM_SERVOS = 5;
 
-  double delta[6];
-  double increment[6];
+  double startAngles[NUM_SERVOS];
+  double delta[NUM_SERVOS];
 
-  for (int i = 0; i < 6; i++) {
-      delta[i] = newAngles[i] - servoAngles[i];
-      increment[i] = delta[i] / steps;
-      printf("Servo %d: from %f to %f, delta %f, increment %f\n", i, servoAngles[i], newAngles[i], delta[i], increment[i]);
+  for (int i = 0; i < NUM_SERVOS; i++) {
+      startAngles[i] = servoAngles[i];
+      delta[i] = newAngles[i] - startAngles[i];
+
+      printf(
+          "Servo %d: from %f to %f, delta %f\n",
+          i, startAngles[i], newAngles[i], delta[i]
+      );
   }
 
-  for (int s = 0; s <= steps; s++) {
-      for (int i = 0; i < 6; i++) {
-          double targetAngle = servoAngles[i] + increment[i] * s;
+  unsigned long startTime = millis();
 
-          // if (targetAngle < 0) targetAngle = 0;
-          // if (targetAngle > 180) targetAngle = 180;
+  while (true) {
+      unsigned long elapsed = millis() - startTime;
+      if (elapsed >= moveTime) break;
 
-          servos[i].write(targetAngle);
+      double t = (double)elapsed / (double)moveTime;
+
+      double s = 0.5 * (1.0 - cos(PI * t));
+
+      for (int i = 0; i < NUM_SERVOS; i++) {
+          double angle = startAngles[i] + s * delta[i];
+
+          servos[i].write(angle);
       }
-      delay(stepTime);
+
+      delay(15);
   }
 
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < NUM_SERVOS; i++) {
       servoAngles[i] = newAngles[i];
+      servos[i].write(newAngles[i]);
   }
 }
 
@@ -253,8 +245,6 @@ void setup()
   initESPNow();
 
   initPosition();
-  
-  sendMessage(TAKE_PHOTO);
 }
 
 void loop()
@@ -277,16 +267,17 @@ void loop()
 
         if (commands[i] == "move")
         {
-          angles[0] = instructions[i][0] * 180 / M_PI;
-          angles[1] = instructions[i][1] * 180 / M_PI;
-          angles[2] = instructions[i][2] * 180 / M_PI;
+          angles[0] = instructions[i][0];
+          angles[1] = instructions[i][1];
+          angles[2] = instructions[i][2];
+          angles[3] = instructions[i][3];
+          angles[4] = instructions[i][4];
           getServoAngles(angles, newAngles);
-          
-          if (isPositionUnsafe(angles))
-          {
-            Serial.println("Position is unsafe, skipping move.");
-            continue;
-          }
+          // if (isPositionUnsafe(angles))
+          // {
+          //   Serial.println("Position is unsafe, skipping move.");
+          //   continue;
+          // }
 
           rotateServos(newAngles, 2000);
         }
@@ -315,17 +306,8 @@ void loop()
     }
     receivedData.command = NONE;
   }
-
-  // for (int i = 270; i >= 90; i-=10)
-  // {
-  //   servoJoint1.write(i);
-  //   delay(500);
-  // }
-  // for (int i = 10; i < ; i++)
-  // {
-  //   /* code */
-  // }
-
-  // servoHead1.write(90);
-  // servoJoint1.write(200);
+  else
+  {
+    sendMessage(TAKE_PHOTO);
+  }
 }
