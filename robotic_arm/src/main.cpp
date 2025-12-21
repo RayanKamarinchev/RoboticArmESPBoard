@@ -16,6 +16,7 @@ Servo servoBase;
 
 Servo servos[6];
 double initialAngles[] = {30, 90+10, 90 + 15, 150, 0+6, 170};
+double offsetAngles[] = {-5, 1, 1, 0, 0, 0};
 double servoAngles[6];
 
 const char *ssid = "M-Tel_DF97";
@@ -25,6 +26,7 @@ const char *password = "4857544371DF9731";
 const char* serverURL = "http://infiniScript.pythonanywhere.com/get_movements";
 uint8_t receiverMAC[] = {0x3C, 0x8A, 0x1F, 0xD5, 0x23, 0xFC};
 
+bool isFirstImage = true;
 enum Command {
   NONE = 0,
   TAKE_PHOTO = 1,
@@ -66,7 +68,7 @@ void sendMessage(Command command){
 void onReceive(const uint8_t *macAddr, const uint8_t *data, int len) {
   memcpy(&receivedData, data, sizeof(receivedData));
   Serial.print("Received: ");
-  Serial.println(receivedData.command);
+  Serial.print(receivedData.command);
 }
 
 void initESPNow(){
@@ -114,12 +116,11 @@ void initPosition(){
     servoAngles[i] = initialAngles[i];
   }
   
-  for (int i = 0; i <= 5; i++)
+  for (int i = 0; i < 6; i++)
   {
     servos[i].write(servoAngles[i]);
     // delay(100);
   }
-  delay(1000);
 }
 
 
@@ -176,7 +177,7 @@ bool receiveInstructions(std::vector<String> &commands, std::vector<std::vector<
 void getServoAngles(double angles[], double *newAngles)
 {
   newAngles[0] = 30-angles[0];
-  newAngles[1] = angles[1]+10; //7 10
+  newAngles[1] = angles[1]+7; //7 10
   newAngles[2] = 214-angles[2];//215 214
   newAngles[3] = 150-angles[3];
   newAngles[4] = angles[4]-73;//74 73
@@ -250,6 +251,23 @@ void setup()
 void loop()
 {
   if (receivedData.command == PHOTO_TAKEN) {
+    if (isFirstImage)
+    {
+      receivedData.command = NONE;
+      isFirstImage = false;
+      for (int i = 0; i < 6; i++)
+      {
+        newAngles[i] = initialAngles[i] + offsetAngles[i];
+      }
+      rotateServos(newAngles);
+      return;
+    }
+    else
+    {
+      rotateServos(initialAngles);
+    }
+    
+    
     std::vector<String> commands;
     std::vector<std::vector<double>> instructions;
     success = receiveInstructions(commands, instructions);
@@ -279,7 +297,7 @@ void loop()
           //   continue;
           // }
 
-          rotateServos(newAngles, 2000);
+          rotateServos(newAngles);
         }
         else if (commands[i] == "grip")
         {
@@ -300,7 +318,7 @@ void loop()
         }
         else if (commands[i] == "initial")
         {
-          rotateServos(initialAngles, 2000);
+          rotateServos(initialAngles);
         }
       }
     }
