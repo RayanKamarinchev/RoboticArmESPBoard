@@ -17,7 +17,23 @@ Servo servoBase;
 Servo servos[6];
 double initialAngles[] = {30, 100, 100, 155, 6, 160};
 double depthOffsetAngles[] = {-5, 1, 1, 0, 0, 0};
+double debugAngles[12][6] = {
+  {30, 100, 105, 155, 0, 170},
+  {30, 100, 105, 155, 6, 170},
+  {30, 100, 105, 155, 10, 170},
+  {30, 100, 105, 155, 20, 170},
+  {30, 100, 105, 155, 30, 170},
+  {30, 100, 75, 155, 6, 170},
+  {30, 100, 85, 155, 6, 170},
+  {30, 100, 95, 155, 6, 170},
+  {30, 100, 105, 155, 6, 170},
+  {30, 100, 115, 155, 6, 170},
+  {30, 100, 125, 155, 6, 170},
+  {30, 100, 135, 155, 6, 170},
+};
 double servoAngles[6];
+int counter = 0;
+bool isDebug = true;
 uint32_t lastSend = 0;
 
 const char *ssid = "M-Tel_DF97";
@@ -271,79 +287,97 @@ void loop()
 {
   switch (state)
   {
-    case IDLE: {
-      std::vector<String> commands;
-      std::vector<std::vector<double>> instructions;
-      success = receiveInstructions(commands, instructions);
-      if (success)
-      {
-        for (int i = 0; i < commands.size(); i++)
+    case IDLE:
+      if (isDebug) {
+        if (counter == sizeof(debugAngles) / sizeof(debugAngles[0]))
         {
-          Serial.printf("Command: %s\n", commands[i].c_str());
-          Serial.printf("Values: ");
-          for (int j = 0; j < instructions[i].size(); j++)
+          delay(100000);
+          return;
+        }
+        
+        rotateServos(debugAngles[counter]);
+      }
+      else
+      {
+        std::vector<String> commands;
+        std::vector<std::vector<double>> instructions;
+        success = receiveInstructions(commands, instructions);
+        if (success)
+        {
+          for (int i = 0; i < commands.size(); i++)
           {
-            Serial.printf("%f ", instructions[i][j]);
-          }
-          Serial.println();
+            Serial.printf("Command: %s\n", commands[i].c_str());
+            Serial.printf("Values: ");
+            for (int j = 0; j < instructions[i].size(); j++)
+            {
+              Serial.printf("%f ", instructions[i][j]);
+            }
+            Serial.println();
 
-          if (commands[i] == "move")
-          {
-            for (size_t j = 0; j < 5; j++)
+            if (commands[i] == "move")
             {
-              angles[j] = instructions[i][j];
-            }
-            getServoAngles(angles, newAngles);
-            // if (isPositionUnsafe(angles))
-            // {
-            //   Serial.println("Position is unsafe, skipping move.");
-            //   continue;
-            // }
+              for (size_t j = 0; j < 5; j++)
+              {
+                angles[j] = instructions[i][j];
+              }
+              getServoAngles(angles, newAngles);
+              // if (isPositionUnsafe(angles))
+              // {
+              //   Serial.println("Position is unsafe, skipping move.");
+              //   continue;
+              // }
 
-            rotateServos(newAngles);
-          }
-          else if (commands[i] == "grip")
-          {
-            if (instructions[i][0] == 1)
-            {
-              pickUp();
+              rotateServos(newAngles);
             }
-            else if (instructions[i][0] == 0)
+            else if (commands[i] == "grip")
             {
-              release();
+              if (instructions[i][0] == 1)
+              {
+                pickUp();
+              }
+              else if (instructions[i][0] == 0)
+              {
+                release();
+              }
             }
-          }
-          else if (commands[i] == "wait")
-          {
-            int waitTime = (int)instructions[i][0]*1000;
-            Serial.printf("Waiting for %d ms\n", waitTime);
-            delay(waitTime);
-          }
-          else if (commands[i] == "initial")
-          {
-            rotateServos(initialAngles);
+            else if (commands[i] == "wait")
+            {
+              int waitTime = (int)instructions[i][0]*1000;
+              Serial.printf("Waiting for %d ms\n", waitTime);
+              delay(waitTime);
+            }
+            else if (commands[i] == "initial")
+            {
+              rotateServos(initialAngles);
+            }
           }
         }
       }
+      
 
       state = REQUESTING_PHOTO;
       break;
-    }
-    case REQUESTING_PHOTO: {
+
+    case REQUESTING_PHOTO:
       Serial.println("requesting");
       sendMessage(TAKE_PHOTO, servoAngles);
       lastSend = millis();
       state = WAITING_PHOTO;
       break;
-    }
 
-    case WAITING_PHOTO:{
+    case WAITING_PHOTO:
       if (photoTakenFlag) {
         Serial.println("wait done");
         photoTakenFlag=false;
+        counter++;
         state = IDLE;
       }
+
+      // if (millis() - lastSend > 3000) {
+      //   Serial.println("retry");
+      //   sendMessage(TAKE_PHOTO, servoAngles);
+      //   lastSend = millis();
+      // }
       break;
-    }
   }
 }
