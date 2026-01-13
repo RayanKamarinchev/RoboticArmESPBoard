@@ -18,7 +18,6 @@ Servo servos[6];
 double initialAngles[] = {30, 100, 100, 155, 6, 160};
 double depthOffsetAngles[] = {-5, 1, 1, 0, 0, 0};
 double servoAngles[6];
-uint32_t lastSend = 0;
 
 const char *ssid = "M-Tel_DF97";
 const char *password = "4857544371DF9731";
@@ -37,10 +36,9 @@ enum Command {
 
 enum State {
   IDLE,
-  REQUESTING_PHOTO,
-  WAITING_PHOTO
+  REQUESTING_PHOTO
 };
-State state = IDLE;
+State state = REQUESTING_PHOTO;
 
 typedef struct{
   uint8_t command;
@@ -330,17 +328,18 @@ void loop()
       break;
     }
     case REQUESTING_PHOTO: {
-      Serial.println("requesting");
-      sendMessage(TAKE_PHOTO, servoAngles);
-      lastSend = millis();
-      state = WAITING_PHOTO;
-      break;
-    }
+      static unsigned long lastSend = 0;
 
-    case WAITING_PHOTO:{
-      if (photoTakenFlag) {
-        Serial.println("wait done");
-        photoTakenFlag=false;
+      if (receivedData.command != PHOTO_TAKEN && millis() - lastSend > 1000) {
+        Serial.println("sending TAKE_PHOTO");
+        sendMessage(TAKE_PHOTO, servoAngles);
+        lastSend = millis();
+      }
+
+      if (receivedData.command == PHOTO_TAKEN) {
+        Serial.println("PHOTO_TAKEN received");
+        photoTakenFlag = false;
+        receivedData.command = NONE;
         state = IDLE;
       }
       break;
