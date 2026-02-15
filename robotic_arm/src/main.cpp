@@ -14,16 +14,18 @@ Servo servoJoint2;
 Servo servoJoint1;
 Servo servoBase;
 
-Servo servos[6];
+Servo servos[6];//155
 double initialAngles[] = {30, 100, 100, 155, 6, 160};
 double depthOffsetAngles[] = {-5, 1, 1, 0, 0, 0};
-double servoAngles[6];
+float servoAngles[6];
 
 const char *ssid = "M-Tel_DF97";
 const char *password = "4857544371DF9731";
 // String sessionId = String(esp_random(), HEX);
 // const String serverURL = "http://infiniScript.pythonanywhere.com/get_movements?session_id=" + sessionId;
-const char* serverURL = "http://192.168.100.12:5000/get_movements";
+String serverName = "http://192.168.100.13";
+String serverIp = "192.168.100.13";
+const String serverExtension = ":5000/get_movements";
 uint8_t receiverMAC[] = {0x3C, 0x8A, 0x1F, 0xD5, 0x23, 0xFC};
 
 bool isFirstImage = true;
@@ -42,7 +44,8 @@ State state = REQUESTING_PHOTO;
 
 typedef struct{
   uint8_t command;
-  double angles[6];
+  float angles[6];
+  char serverIp[32];
 } struct_message;
 
 struct_message dataToSend;
@@ -50,7 +53,15 @@ struct_message receivedData;
 
 bool success = false;
 double angles[6];
-double newAngles[6];
+double receivedAngles[5];
+double gripAngle = 70;
+bool gripping = false;
+
+unsigned long waitStart = 0;
+unsigned long waitDuration = 0;
+bool isWaiting = false;
+bool isInControlMode = false;
+bool isTakingPhoto = false;
 
 void initAndConnectWifi()
 {
@@ -65,16 +76,37 @@ void initAndConnectWifi()
   Serial.println("");
   Serial.print("Connected! IP address: ");
   Serial.println(WiFi.localIP());
+
+  HTTPClient http;
+
+  http.begin(serverName);
+  http.setTimeout(500); 
+
+  int httpResponseCode = http.GET();
+
+  Serial.println("Connecting to server: " + serverName);
+
+  if (httpResponseCode != -1) {
+    Serial.println("Connection to " + serverName + " successful.");
+    return;
+  }
+  Serial.println("Connection to " + serverName + " failed.");
 }
 
-void sendMessage(Command command, double sentAngles[]){
+void sendMessage(Command command, float sentAngles[], String serverIp){
   dataToSend.command = command;
-  for (size_t i = 0; i < 6; i++)
-  {
+
+  for (size_t i = 0; i < 6; i++) {
     dataToSend.angles[i] = sentAngles[i];
   }
-  
-  esp_now_send(receiverMAC, (uint8_t *) &dataToSend, sizeof(dataToSend));
+
+  strncpy(dataToSend.serverIp,
+        serverIp.c_str(),
+        sizeof(dataToSend.serverIp) - 1);
+
+  dataToSend.serverIp[sizeof(dataToSend.serverIp) - 1] = '\0';
+
+  esp_now_send(receiverMAC, (uint8_t*)&dataToSend, sizeof(dataToSend));
 }
 
 void onReceive(const uint8_t *macAddr, const uint8_t *data, int len) {
@@ -112,9 +144,9 @@ void attachServos(){
   // 5 14
   // 6 25
 
-  servoGrip.attach(33);
+  servoGrip.attach(12);
   servoHeadJoint.attach(27);
-  servoHeadRotate.attach(12);
+  servoHeadRotate.attach(33);
   servoJoint2.attach(26);
   servoJoint1.attach(14);
   servoBase.attach(25);
@@ -147,7 +179,7 @@ void initPosition(){
 bool receiveInstructions(std::vector<String> &commands, std::vector<std::vector<double>> &instructions)
 {
   HTTPClient http;
-  http.begin(serverURL);
+  http.begin(serverName + serverExtension);
 
   int httpResponseCode = http.GET();
   
@@ -189,15 +221,6 @@ bool receiveInstructions(std::vector<String> &commands, std::vector<std::vector<
   }
   http.end();
   return true;
-}
-
-void getServoAngles(double angles[], double *newAngles)
-{
-  newAngles[0] = 30-angles[0];
-  newAngles[1] = angles[1]+7; //7 10
-  newAngles[2] = 214-angles[2];//215 214
-  newAngles[3] = 155-angles[3];
-  newAngles[4] = angles[4]-73;//74 73
 }
 
 void rotateServos(double newAngles[], int moveTime = 1000, int stepTime = 20)
@@ -242,16 +265,21 @@ void rotateServos(double newAngles[], int moveTime = 1000, int stepTime = 20)
   }
 }
 
-void pickUp(){
-  for (int i = 160; i >= 90; i-=10)
-  {
-    servos[5].write(i);
-    delay(100);
+void checkForConnectedMode(){
+  String data = Serial.readStringUntil('\n');
+  if (data == "activate"){
+    isInControlMode = true;
   }
+}
+
+void pickUp(){
+  servos[5].write(gripAngle);
+  bool gripping = true;
 }
 
 void release(){
   servos[5].write(160);
+  bool gripping = false;
 }
 
 void setup()
@@ -263,13 +291,20 @@ void setup()
   initESPNow();
 
   initPosition();
+  checkForConnectedMode();
+  delay(1000);
+  checkForConnectedMode();
 }
 
 void loop()
 {
-  switch (state)
-  {
-    case IDLE: {
+  if (!isInControlMode){
+    if (gripping) {
+      servos[5].write(gripAngle);
+    }
+
+    if (receivedData.command == PHOTO_TAKEN)
+    {
       std::vector<String> commands;
       std::vector<std::vector<double>> instructions;
       success = receiveInstructions(commands, instructions);
@@ -291,31 +326,44 @@ void loop()
             {
               angles[j] = instructions[i][j];
             }
-            getServoAngles(angles, newAngles);
             // if (isPositionUnsafe(angles))
             // {
             //   Serial.println("Position is unsafe, skipping move.");
             //   continue;
             // }
 
-            rotateServos(newAngles);
+            rotateServos(angles);
           }
           else if (commands[i] == "grip")
           {
             if (instructions[i][0] == 1)
             {
+              Serial.println("grip it");
               pickUp();
             }
             else if (instructions[i][0] == 0)
             {
+              Serial.println("ungrip it");
               release();
             }
           }
           else if (commands[i] == "wait")
           {
-            int waitTime = (int)instructions[i][0]*1000;
-            Serial.printf("Waiting for %d ms\n", waitTime);
-            delay(waitTime);
+            waitDuration = (unsigned long)instructions[i][0];
+            waitStart = millis();
+            isWaiting = true;
+
+            Serial.printf("Waiting for %lu ms\n", waitDuration);
+
+            while (millis() - waitStart < waitDuration) {
+              if (gripping) {
+                servos[5].write(gripAngle);
+              }
+
+              delay(5);
+            }
+
+            isWaiting = false;
           }
           else if (commands[i] == "initial")
           {
@@ -323,26 +371,82 @@ void loop()
           }
         }
       }
-
-      state = REQUESTING_PHOTO;
-      break;
+      receivedData.command = NONE;
     }
-    case REQUESTING_PHOTO: {
-      static unsigned long lastSend = 0;
+    else
+    {
+      checkForConnectedMode();
+      if(!isInControlMode)
+      {
+        sendMessage(TAKE_PHOTO, servoAngles, serverIp);
+      }
+    }
+  }
+  else
+  {
+    servos[5].write(servoAngles[5]);
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    if(command == "deactivate"){
+      isInControlMode = false;
+      return;
+    }
+    if(command.startsWith("take_photo")){
+      int separatorIndex = command.indexOf(':');
+      serverIp = command.substring(separatorIndex + 1);
 
-      if (receivedData.command != PHOTO_TAKEN && millis() - lastSend > 1000) {
-        Serial.println("sending TAKE_PHOTO");
-        sendMessage(TAKE_PHOTO, servoAngles);
-        lastSend = millis();
+      isTakingPhoto = true;
+    }
+    if (receivedData.command == PHOTO_TAKEN)
+    {
+      receivedData.command = NONE;
+      isTakingPhoto = false;
+    }
+    
+    if (isTakingPhoto)
+    {
+      sendMessage(TAKE_PHOTO, servoAngles, serverName);
+    }
+    
+    
+    // format: S<id>:<angle>
+    if (command.charAt(0) == 'S') {
+      int colon = command.indexOf(':');
+      int idx = command.substring(1, colon).toInt();
+      int angle = command.substring(colon + 1).toInt();
+
+      if (idx >= 0 && idx <= 5 && angle >= 0 && angle <= 180) {
+        servoAngles[idx] = angle;
+        servos[idx].write(angle);
+        // delay(100);
+        // servos[idx].write(angle);
+        
+        Serial.print("Servo ");
+        Serial.print(idx);
+        Serial.print(" set to ");
+        Serial.print(angle);
+        Serial.println(" degrees");
+      } else {
+        Serial.println("Invalid servo ID or angle");
+      }
+    }
+    else if(command.charAt(0) == 'P'){
+
+      int start = 1;
+
+      for (int i = 0; i < 5; i++) {
+        int nextColon = command.indexOf(':', start);
+
+        if (nextColon == -1) {  
+          // Last value (no more colons)
+          receivedAngles[i] = command.substring(start).toInt();
+        } else {
+          receivedAngles[i] = command.substring(start, nextColon).toInt();
+          start = nextColon + 1;
+        }
       }
 
-      if (receivedData.command == PHOTO_TAKEN) {
-        Serial.println("PHOTO_TAKEN received");
-        photoTakenFlag = false;
-        receivedData.command = NONE;
-        state = IDLE;
-      }
-      break;
+      rotateServos(receivedAngles);
     }
   }
 }
